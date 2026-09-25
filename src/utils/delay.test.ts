@@ -1,6 +1,12 @@
 import { describe, expect, test } from 'vitest'
 
-import { classifyDelay, compareByDelay, DEFAULT_DELAY_TIMEOUT } from './delay'
+import {
+  classifyDelay,
+  compareByDelay,
+  compareDelayPresentation,
+  DEFAULT_DELAY_TIMEOUT,
+  presentDelay,
+} from './delay'
 
 describe('delay semantics', () => {
   test('classifies measurements and core sentinel values', () => {
@@ -42,5 +48,33 @@ describe('delay semantics', () => {
         ).toBe(0)
       }
     }
+  })
+
+  test('rounds display percentages without changing sentinel states', () => {
+    expect([
+      presentDelay(1, 40).display,
+      presentDelay(2, 40).display,
+      presentDelay(3, 40).display,
+      presentDelay(4, 40).display,
+      presentDelay(101, 40).display,
+      presentDelay(102, 40).display,
+      presentDelay(150, 200).display,
+    ]).toEqual([1, 1, 1, 2, 40, 41, 300])
+
+    for (const delay of [-2, -1, 0, DEFAULT_DELAY_TIMEOUT, 1e5 + 1, NaN]) {
+      expect(presentDelay(delay, 40).display).toBe(delay)
+      expect(presentDelay(delay, 200).display).toBe(delay)
+    }
+  })
+
+  test('sorts measured presentations by displayed delay and preserves raw precedence', () => {
+    const values = [
+      presentDelay(60, 40),
+      presentDelay(30, 200),
+      presentDelay(0, 40),
+    ]
+    expect(
+      values.sort(compareDelayPresentation).map(({ display }) => display),
+    ).toEqual([24, 60, 0])
   })
 })

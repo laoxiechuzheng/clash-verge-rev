@@ -4,10 +4,12 @@ import { useCallback, useEffect, useReducer } from 'react'
 import { useVerge } from '@/hooks/use-verge'
 import delayManager, { type DelayUpdate } from '@/services/delay'
 import {
+  delayDisplayPercentOf,
   isInteractableMember,
   memberDetails,
   type ResolvedProxyMember,
 } from '@/types/proxy-view'
+import { presentDelay } from '@/utils/delay'
 
 const PRESET_PROXY_NAMES = [
   'DIRECT',
@@ -24,6 +26,8 @@ const INITIAL_DELAY: DelayUpdate = { delay: -1, updatedAt: 0 }
 export interface UseProxyDelayState {
   delayState: DelayUpdate
   delayValue: number
+  rawDelayValue: number
+  delayPercent: number
   isPreset: boolean
   timeout: number
   onDelay: () => Promise<void>
@@ -60,7 +64,7 @@ export function useProxyDelayState(
       return
     }
 
-    const fallbackDelay = delayManager.getDelayFix(member, groupName)
+    const fallbackDelay = delayManager.getRawDelayFix(member, groupName)
     if (fallbackDelay === -1) {
       setDelayState({ delay: -1, updatedAt: 0 })
       return
@@ -89,9 +93,17 @@ export function useProxyDelayState(
     setDelayState(await delayManager.checkDelay(member, groupName, timeout))
   })
 
+  const delayPresentation = presentDelay(
+    delayState.delay,
+    delayDisplayPercentOf(member),
+    timeout,
+  )
+
   return {
     delayState,
-    delayValue: delayState.delay,
+    delayValue: delayPresentation.display,
+    rawDelayValue: delayPresentation.raw,
+    delayPercent: delayPresentation.percent,
     isPreset,
     timeout,
     onDelay,

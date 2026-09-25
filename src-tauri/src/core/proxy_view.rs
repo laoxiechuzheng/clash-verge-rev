@@ -5,10 +5,13 @@ use tauri_plugin_mihomo::models::{
     DelayHistory, Proxies, Proxy, ProxyProvider, ProxyProviders, ProxyType, VehicleType,
 };
 
+use super::delay_display::{DEFAULT_DELAY_DISPLAY_PERCENT, DelayDisplayContext};
+
 pub struct ProxyViewInput {
     pub runtime_group_order: Vec<String>,
     pub proxies: Proxies,
     pub providers: Option<ProxyProviders>,
+    pub delay_display: DelayDisplayContext,
 }
 
 pub struct ProxyViewBuilder;
@@ -68,6 +71,7 @@ pub struct ProxyGroupView {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub test_url: Option<String>,
     pub history: Vec<DelayHistory>,
+    pub delay_display_percent: u16,
     #[serde(flatten)]
     pub capabilities: ProxyCapabilities,
     pub members: Vec<ProxyMemberRef>,
@@ -82,6 +86,7 @@ pub struct ProxyNodeView {
     pub proxy_type: ProxyType,
     pub alive: bool,
     pub history: Vec<DelayHistory>,
+    pub delay_display_percent: u16,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub id: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -174,6 +179,50 @@ struct MemberResolver<'a> {
     provider_available: bool,
 }
 
+struct GroupDelayDisplay<'a> {
+    now_by_group: &'a BTreeMap<String, Option<String>>,
+    core_node_ids: &'a BTreeMap<String, String>,
+    provider_candidates: &'a BTreeMap<String, Vec<String>>,
+    records: &'a BTreeMap<String, ProxyNodeView>,
+    default_percent: u16,
+}
+
+impl GroupDelayDisplay<'_> {
+    fn percent_for_group(&self, name: &str) -> u16 {
+        self.resolve_member_name(name, &mut BTreeSet::new())
+    }
+
+    fn resolve_member_name(&self, name: &str, visiting: &mut BTreeSet<String>) -> u16 {
+        if let Some(record_id) = self.core_node_ids.get(name) {
+            return self
+                .records
+                .get(record_id)
+                .map_or(self.default_percent, |record| record.delay_display_percent);
+        }
+
+        match self.provider_candidates.get(name).map(Vec::as_slice) {
+            Some([record_id]) => {
+                return self
+                    .records
+                    .get(record_id)
+                    .map_or(self.default_percent, |record| record.delay_display_percent);
+            }
+            Some(_) => return self.default_percent,
+            None => {}
+        }
+
+        let Some(Some(now)) = self.now_by_group.get(name) else {
+            return self.default_percent;
+        };
+        if !visiting.insert(name.to_owned()) {
+            return self.default_percent;
+        }
+        let percent = self.resolve_member_name(now, visiting);
+        visiting.remove(name);
+        percent
+    }
+}
+
 impl MemberResolver<'_> {
     fn resolve(&self, name: String) -> ProxyMemberRef {
         if self.group_names.contains(&name) {
@@ -213,6 +262,7 @@ impl ProxyViewBuilder {
             runtime_group_order,
             proxies,
             providers,
+            delay_display,
         } = input;
         let provider_state = if providers.is_some() {
             ProxyViewProviderState::Ready
@@ -220,8 +270,19 @@ impl ProxyViewBuilder {
             ProxyViewProviderState::Unavailable
         };
         let (mut core_groups, core_nodes) = partition_core(proxies);
-        let (mut records, core_node_ids) = build_core_records(core_nodes);
-        let (providers, provider_candidates) = build_provider_records(providers, &mut records);
+        let now_by_group = core_groups
+            .iter()
+            .map(|(name, group)| (name.clone(), group.now.clone()))
+            .collect();
+        let (mut records, core_node_ids) = build_core_records(core_nodes, delay_display.profile_percent());
+        let (providers, provider_candidates) = build_provider_records(providers, &mut records, &delay_display);
+        let group_delay_display = GroupDelayDisplay {
+            now_by_group: &now_by_group,
+            core_node_ids: &core_node_ids,
+            provider_candidates: &provider_candidates,
+            records: &records,
+            default_percent: DEFAULT_DELAY_DISPLAY_PERCENT,
+        };
         let resolver = MemberResolver {
             group_names: core_groups.keys().cloned().collect(),
             core_node_ids: &core_node_ids,
@@ -231,8 +292,9 @@ impl ProxyViewBuilder {
 
         let global = core_groups
             .remove("GLOBAL")
-            .map(|proxy| build_group("GLOBAL".to_owned(), proxy, &resolver));
-        let (groups, order_source) = build_ordered_groups(core_groups, runtime_group_order, &resolver);
+            .map(|proxy| build_group("GLOBAL".to_owned(), proxy, &resolver, &group_delay_display));
+        let (groups, order_source) =
+            build_ordered_groups(core_groups, runtime_group_order, &resolver, &group_delay_display);
         let direct = core_node_ids.get("DIRECT").cloned();
         let standalone = build_standalone(&core_node_ids);
 
@@ -267,6 +329,7 @@ fn partition_core(proxies: Proxies) -> (BTreeMap<String, Proxy>, BTreeMap<String
 
 fn build_core_records(
     core_nodes: BTreeMap<String, Proxy>,
+    delay_display_percent: u16,
 ) -> (BTreeMap<String, ProxyNodeView>, BTreeMap<String, String>) {
     let mut records = BTreeMap::new();
     let mut ids = BTreeMap::new();
@@ -281,6 +344,7 @@ fn build_core_records(
                 name.clone(),
                 proxy,
                 ProxyNodeSource::Core { proxy_name: name },
+                delay_display_percent,
             ),
         );
     }
@@ -291,6 +355,7 @@ fn build_core_records(
 fn build_provider_records(
     providers: Option<ProxyProviders>,
     records: &mut BTreeMap<String, ProxyNodeView>,
+    delay_display: &DelayDisplayContext,
 ) -> (Vec<ProxyProviderView>, BTreeMap<String, Vec<String>>) {
     let providers = providers
         .map(|providers| providers.providers.into_iter().collect::<BTreeMap<_, _>>())
@@ -333,6 +398,7 @@ fn build_provider_records(
                         provider_name: provider_name.clone(),
                         proxy_name,
                     },
+                    delay_display.node_percent(Some(&provider_name)),
                 ),
             );
             proxy_record_ids.push(record_id);
@@ -355,7 +421,12 @@ fn build_provider_records(
     (views, candidates)
 }
 
-fn build_group(name: String, proxy: Proxy, resolver: &MemberResolver<'_>) -> ProxyGroupView {
+fn build_group(
+    name: String,
+    proxy: Proxy,
+    resolver: &MemberResolver<'_>,
+    group_delay_display: &GroupDelayDisplay<'_>,
+) -> ProxyGroupView {
     let Proxy {
         all,
         fixed,
@@ -374,6 +445,8 @@ fn build_group(name: String, proxy: Proxy, resolver: &MemberResolver<'_>) -> Pro
         ..
     } = proxy;
 
+    let delay_display_percent = group_delay_display.percent_for_group(&name);
+
     ProxyGroupView {
         name,
         proxy_type,
@@ -384,6 +457,7 @@ fn build_group(name: String, proxy: Proxy, resolver: &MemberResolver<'_>) -> Pro
         icon,
         test_url,
         history,
+        delay_display_percent,
         capabilities: ProxyCapabilities {
             udp,
             xudp,
@@ -399,7 +473,13 @@ fn build_group(name: String, proxy: Proxy, resolver: &MemberResolver<'_>) -> Pro
     }
 }
 
-fn build_node(record_id: String, name: String, proxy: Proxy, source: ProxyNodeSource) -> ProxyNodeView {
+fn build_node(
+    record_id: String,
+    name: String,
+    proxy: Proxy,
+    source: ProxyNodeSource,
+    delay_display_percent: u16,
+) -> ProxyNodeView {
     let Proxy {
         id,
         hidden,
@@ -422,6 +502,7 @@ fn build_node(record_id: String, name: String, proxy: Proxy, source: ProxyNodeSo
         proxy_type,
         alive,
         history,
+        delay_display_percent,
         id,
         hidden,
         icon,
@@ -441,11 +522,12 @@ fn build_ordered_groups(
     mut core_groups: BTreeMap<String, Proxy>,
     runtime_group_order: Vec<String>,
     resolver: &MemberResolver<'_>,
+    group_delay_display: &GroupDelayDisplay<'_>,
 ) -> (Vec<ProxyGroupView>, ProxyViewOrderSource) {
     let mut groups = Vec::with_capacity(core_groups.len());
     for name in runtime_group_order {
         if let Some(proxy) = core_groups.remove(&name) {
-            groups.push(build_group(name, proxy, resolver));
+            groups.push(build_group(name, proxy, resolver, group_delay_display));
         }
     }
 
@@ -457,7 +539,7 @@ fn build_ordered_groups(
     groups.extend(
         core_groups
             .into_iter()
-            .map(|(name, proxy)| build_group(name, proxy, resolver)),
+            .map(|(name, proxy)| build_group(name, proxy, resolver, group_delay_display)),
     );
     (groups, order_source)
 }
@@ -489,6 +571,7 @@ mod tests {
         ProxyMemberRef, ProxyMemberUnresolvedReason, ProxyNodeSource, ProxyViewBuilder, ProxyViewInput,
         ProxyViewOrderSource, ProxyViewProviderState,
     };
+    use crate::core::delay_display::{DEFAULT_DELAY_DISPLAY_PERCENT, DelayDisplayContext, SLOVE_DELAY_DISPLAY_PERCENT};
 
     fn node(name: &str) -> Proxy {
         Proxy {
@@ -531,6 +614,7 @@ mod tests {
             runtime_group_order: vec!["Zulu".into(), "Alpha".into()],
             proxies: Proxies { proxies },
             providers: None,
+            delay_display: Default::default(),
         }
     }
 
@@ -560,6 +644,7 @@ mod tests {
                 ("a", VehicleType::HTTP, &["duplicate"]),
                 ("b", VehicleType::File, &["duplicate"]),
             ])),
+            delay_display: Default::default(),
         }
     }
 
@@ -569,6 +654,7 @@ mod tests {
             runtime_group_order: vec![],
             proxies: Proxies { proxies },
             providers,
+            delay_display: Default::default(),
         }
     }
 
@@ -581,6 +667,7 @@ mod tests {
                 ("unsupported", VehicleType::Compatible, &["ignored"]),
                 ("a-provider", VehicleType::File, &["same", "same"]),
             ])),
+            delay_display: Default::default(),
         }
     }
 
@@ -604,6 +691,7 @@ mod tests {
             providers: Some(ProxyProviders {
                 providers: HashMap::from([("provider-key".to_owned(), provider)]),
             }),
+            delay_display: Default::default(),
         }
     }
 
@@ -682,6 +770,7 @@ mod tests {
             runtime_group_order: vec![],
             proxies: Proxies { proxies },
             providers: Some(providers),
+            delay_display: Default::default(),
         });
         let members = &view.global.as_ref().expect("GLOBAL").members;
 
@@ -753,10 +842,95 @@ mod tests {
                 VehicleType::Compatible,
                 &["ignored"],
             )])),
+            delay_display: Default::default(),
         });
 
         assert_eq!(view.provider_state, ProxyViewProviderState::Ready);
         assert!(view.providers.is_empty());
+    }
+
+    #[test]
+    fn display_percent_uses_profile_provider_and_group_sources() {
+        let mut core_group = group("Core Group", &["core"]);
+        core_group.now = Some("core".into());
+        let mut provider_group = group("Provider Group", &["provider-node"]);
+        provider_group.now = Some("provider-node".into());
+        let proxies = HashMap::from([
+            ("Core Group".to_owned(), core_group),
+            ("Provider Group".to_owned(), provider_group),
+            ("core".to_owned(), node("core")),
+        ]);
+        let runtime: serde_yaml_ng::Mapping = serde_yaml_ng::from_str(
+            r#"
+proxy-providers:
+  provider-a:
+    url: https://cdn.example.com/slove/provider.yaml
+"#,
+        )
+        .expect("parse runtime providers");
+        let delay_display = DelayDisplayContext::from_runtime(Some("https://example.com/profile.yaml"), Some(&runtime));
+
+        let view = ProxyViewBuilder::build(ProxyViewInput {
+            runtime_group_order: vec![],
+            proxies: Proxies { proxies },
+            providers: Some(providers_fixture(vec![(
+                "provider-a",
+                VehicleType::HTTP,
+                &["provider-node"],
+            )])),
+            delay_display,
+        });
+
+        assert_eq!(view.records["c:0"].delay_display_percent, DEFAULT_DELAY_DISPLAY_PERCENT);
+        assert_eq!(view.records["p:0:0"].delay_display_percent, SLOVE_DELAY_DISPLAY_PERCENT);
+        assert_eq!(
+            view.groups
+                .iter()
+                .find(|group| group.name == "Core Group")
+                .expect("core group")
+                .delay_display_percent,
+            DEFAULT_DELAY_DISPLAY_PERCENT
+        );
+        assert_eq!(
+            view.groups
+                .iter()
+                .find(|group| group.name == "Provider Group")
+                .expect("provider group")
+                .delay_display_percent,
+            SLOVE_DELAY_DISPLAY_PERCENT
+        );
+
+        let json = serde_json::to_value(view).expect("serialize view");
+        assert_eq!(json["records"]["c:0"]["delayDisplayPercent"], 200);
+        assert_eq!(json["records"]["p:0:0"]["delayDisplayPercent"], 40);
+    }
+
+    #[test]
+    fn cyclic_group_display_percent_falls_back_to_default() {
+        let mut alpha = group("Alpha", &["Beta"]);
+        alpha.now = Some("Beta".into());
+        let mut beta = group("Beta", &["Alpha"]);
+        beta.now = Some("Alpha".into());
+        let proxies = HashMap::from([("Alpha".to_owned(), alpha), ("Beta".to_owned(), beta)]);
+        let delay_display = DelayDisplayContext::from_runtime(Some("https://example.com/slove/profile.yaml"), None);
+
+        let view = ProxyViewBuilder::build(ProxyViewInput {
+            runtime_group_order: vec![],
+            proxies: Proxies { proxies },
+            providers: None,
+            delay_display,
+        });
+
+        for name in ["Alpha", "Beta"] {
+            assert_eq!(
+                view.groups
+                    .iter()
+                    .find(|group| group.name == name)
+                    .expect("cyclic group")
+                    .delay_display_percent,
+                DEFAULT_DELAY_DISPLAY_PERCENT
+            );
+        }
     }
 
     #[test]

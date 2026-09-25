@@ -1,6 +1,6 @@
 import delayManager from '@/services/delay'
 import { memberDetails } from '@/types/proxy-view'
-import { compareByDelay, DEFAULT_DELAY_TIMEOUT } from '@/utils/delay'
+import { compareDelayPresentation, DEFAULT_DELAY_TIMEOUT } from '@/utils/delay'
 import { compileStringMatcher } from '@/utils/search-matcher'
 
 import type { ResolvedMemberOccurrence } from './use-render-list'
@@ -21,7 +21,13 @@ export function filterSort(
   latencyTimeout?: number,
   searchState?: ProxySearchState,
 ) {
-  const fp = filterProxies(proxies, groupName, filterText, searchState)
+  const fp = filterProxies(
+    proxies,
+    groupName,
+    filterText,
+    latencyTimeout,
+    searchState,
+  )
   const sp = sortProxies(fp, groupName, sortType, latencyTimeout)
   return sp
 }
@@ -33,6 +39,7 @@ function filterProxies(
   proxies: ResolvedMemberOccurrence[],
   groupName: string,
   filterText: string,
+  latencyTimeout?: number,
   searchState?: ProxySearchState,
 ) {
   const query = filterText.trim()
@@ -40,21 +47,30 @@ function filterProxies(
 
   const res1 = regex1.exec(query)
   if (res1) {
+    const effectiveTimeout =
+      typeof latencyTimeout === 'number' && latencyTimeout > 0
+        ? latencyTimeout
+        : DEFAULT_DELAY_TIMEOUT
     const symbol = res1[1]
     const symbol2 = res1[2].toLowerCase()
     const value =
       symbol2 === 'error' ? 1e5 : symbol2 === 'timeout' ? 3000 : +symbol2
 
     return proxies.filter(({ member }) => {
-      const delay = delayManager.getDelayFix(member, groupName)
+      const presentation = delayManager.getDelayPresentation(
+        member,
+        groupName,
+        effectiveTimeout,
+      )
+      const { raw, display } = presentation
 
-      if (delay < 0) return false
-      if (symbol === '=' && symbol2 === 'error') return delay >= 1e5
+      if (raw < 0) return false
+      if (symbol === '=' && symbol2 === 'error') return raw >= 1e5
       if (symbol === '=' && symbol2 === 'timeout')
-        return delay < 1e5 && delay >= 3000
-      if (symbol === '=') return delay == value
-      if (symbol === '<') return delay <= value
-      if (symbol === '>') return delay >= value
+        return raw < 1e5 && raw >= 3000
+      if (symbol === '=') return display == value
+      if (symbol === '<') return display <= value
+      if (symbol === '>') return display >= value
       return false
     })
   }
@@ -100,9 +116,15 @@ function sortProxies(
     return proxies
       .map((proxy) => ({
         proxy,
-        delay: delayManager.getDelayFix(proxy.member, groupName),
+        delay: delayManager.getDelayPresentation(
+          proxy.member,
+          groupName,
+          effectiveTimeout,
+        ),
       }))
-      .sort((a, b) => compareByDelay(a.delay, b.delay, effectiveTimeout))
+      .sort((a, b) =>
+        compareDelayPresentation(a.delay, b.delay, effectiveTimeout),
+      )
       .map(({ proxy }) => proxy)
   }
   const list = proxies.slice()

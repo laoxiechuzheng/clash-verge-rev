@@ -361,11 +361,12 @@ export function ProxyGroupsChain(props: ProxyGroupsChainProps) {
   useEffect(() => {
     if (currentProxyChain.length > 0) {
       const persistedChain = currentProxyChain.map(
-        ({ id, name, type, delay }) => ({
+        ({ id, name, type, delay, delayPercent }) => ({
           id,
           name,
           type,
           delay,
+          delayPercent,
         }),
       )
       localStorage.setItem('proxy-chain-items', JSON.stringify(persistedChain))
@@ -451,6 +452,7 @@ export function ProxyGroupsChain(props: ProxyGroupsChainProps) {
           source: node.source,
           type: node.type,
           delay,
+          delayPercent: node.delayDisplayPercent,
         }
 
         return [...current, chainItem]

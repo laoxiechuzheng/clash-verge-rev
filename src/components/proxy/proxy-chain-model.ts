@@ -12,6 +12,7 @@ export interface ProxyChainItem {
   source?: ProxyNodeView['source']
   type?: string
   delay?: number
+  delayPercent?: number
 }
 
 export const rebindProxyChainItems = (
@@ -32,5 +33,6 @@ export const rebindProxyChainItems = (
       source: rebound?.source ?? item.source,
       type: rebound?.type ?? item.type,
       delay: record?.history.at(-1)?.delay,
+      delayPercent: rebound?.delayDisplayPercent ?? item.delayPercent,
     }
   })

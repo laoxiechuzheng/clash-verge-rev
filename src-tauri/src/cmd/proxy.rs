@@ -3,6 +3,7 @@ use crate::{
     cmd::StringifyErr as _,
     config::Config,
     core::{
+        delay_display::DelayDisplayContext,
         handle::Handle,
         proxy_view::{ProxyViewBuilder, ProxyViewInput, ProxyViewV1},
         tray::Tray,
@@ -55,6 +56,14 @@ pub async fn get_proxy_view() -> CmdResult<ProxyViewV1> {
     let runtime = Config::runtime().await;
     let latest_runtime = runtime.latest_arc();
     let runtime_group_order = runtime_group_order(latest_runtime.config.as_ref());
+    let profiles = Config::profiles().await.latest_arc();
+    let profile_url = profiles
+        .current
+        .as_ref()
+        .and_then(|uid| profiles.get_item(uid).ok())
+        .and_then(|profile| profile.url.as_deref())
+        .map(str::to_owned);
+    let delay_display = DelayDisplayContext::from_runtime(profile_url.as_deref(), latest_runtime.config.as_ref());
 
     let mihomo = Handle::mihomo();
     let (proxies, providers) = tokio::join!(mihomo.get_proxies(), mihomo.get_proxy_providers(),);
@@ -64,6 +73,7 @@ pub async fn get_proxy_view() -> CmdResult<ProxyViewV1> {
         runtime_group_order,
         proxies,
         providers: providers.ok(),
+        delay_display,
     }))
 }
 

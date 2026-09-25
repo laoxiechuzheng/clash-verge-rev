@@ -58,10 +58,14 @@ export const ProxyItem = (props: Props) => {
   const now = member.kind === 'group' ? member.group.now : undefined
 
   // -1/<=0 为不显示，-2 为 loading
-  const { delayValue, isPreset, timeout, onDelay } = useProxyDelayState(
-    member,
-    group.name,
-  )
+  const {
+    delayValue,
+    rawDelayValue,
+    delayPercent,
+    isPreset,
+    timeout,
+    onDelay,
+  } = useProxyDelayState(member, group.name)
 
   return (
     <ListItem sx={sx}>
@@ -172,11 +176,15 @@ export const ProxyItem = (props: Props) => {
                 void onDelay()
               }}
               sx={({ palette }) => ({
-                color: delayManager.formatDelayColor(delayValue, timeout),
+                color: delayManager.formatDelayColor(
+                  rawDelayValue,
+                  timeout,
+                  delayPercent,
+                ),
                 ':hover': { bgcolor: alpha(palette.primary.main, 0.15) },
               })}
             >
-              {delayManager.formatDelay(delayValue, timeout)}
+              {delayManager.formatDelay(rawDelayValue, timeout, delayPercent)}
             </Widget>
           )}
 

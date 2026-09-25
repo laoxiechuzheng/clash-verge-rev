@@ -1,8 +1,10 @@
 import { useCallback, useSyncExternalStore } from 'react'
 
 import delayManager, { type DelaySnapshot } from '@/services/delay'
+import type { DelayPresentation } from '@/utils/delay'
 
-const NO_DELAYS: DelaySnapshot = { of: () => -1 }
+const NO_DELAY: DelayPresentation = { raw: -1, display: -1, percent: 100 }
+const NO_DELAYS: DelaySnapshot = { of: () => NO_DELAY }
 
 /** Exposes the external delay store to React, updating sort order only after a test settles. */
 export const useGroupDelays = (group: string | null): DelaySnapshot => {

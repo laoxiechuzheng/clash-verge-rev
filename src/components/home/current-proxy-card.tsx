@@ -58,7 +58,11 @@ import {
   type ResolvedProxyMember,
 } from '@/types/proxy-view'
 import { debugLog } from '@/utils/debug'
-import { compareByDelay, DEFAULT_DELAY_TIMEOUT } from '@/utils/delay'
+import {
+  compareDelayPresentation,
+  DEFAULT_DELAY_TIMEOUT,
+  type DelayPresentation,
+} from '@/utils/delay'
 
 const STORAGE_KEY_GROUP = 'clash-verge-selected-proxy-group'
 const STORAGE_KEY_SORT_TYPE = 'clash-verge-proxy-sort-type'
@@ -112,9 +116,14 @@ interface ProxyOption {
 type OpenSelect = 'group' | 'proxy' | null
 
 function convertDelayColor(
-  delayValue: number,
+  delay: DelayPresentation,
+  timeout = DEFAULT_DELAY_TIMEOUT,
 ): 'success' | 'warning' | 'error' | 'primary' | 'default' {
-  const colorStr = delayManager.formatDelayColor(delayValue)
+  const colorStr = delayManager.formatDelayColor(
+    delay.raw,
+    timeout,
+    delay.percent,
+  )
   if (!colorStr) return 'default'
 
   const mainColor = colorStr.split('.')[0]
@@ -134,50 +143,50 @@ function convertDelayColor(
 }
 
 function getSignalIcon(
-  delay: number,
+  delay: DelayPresentation,
   translate: (key: string) => string,
 ): {
   icon: React.ReactElement
   text: string
   color: string
 } {
-  if (delay === -2)
+  if (delay.raw === -2)
     return {
       icon: <SignalNone />,
       text: translate('home.components.currentProxy.status.testing'),
       color: 'text.secondary',
     }
-  if (delay === -1)
+  if (delay.raw === -1)
     return {
       icon: <SignalNone />,
       text: translate('home.components.currentProxy.status.untested'),
       color: 'text.secondary',
     }
-  if (delay > 1e5)
+  if (delay.raw > 1e5)
     return {
       icon: <SignalError />,
       text: translate('home.components.currentProxy.status.error'),
       color: 'error.main',
     }
-  if (delay === 0 || delay >= 10000)
+  if (delay.raw === 0 || delay.raw >= 10000)
     return {
       icon: <SignalError />,
       text: translate('home.components.currentProxy.status.timeout'),
       color: 'error.main',
     }
-  if (delay >= 500)
+  if (delay.display >= 500)
     return {
       icon: <SignalWeak />,
       text: translate('home.components.currentProxy.status.latencyHigh'),
       color: 'error.main',
     }
-  if (delay >= 300)
+  if (delay.display >= 300)
     return {
       icon: <SignalMedium />,
       text: translate('home.components.currentProxy.status.latencyMedium'),
       color: 'warning.main',
     }
-  if (delay >= 200)
+  if (delay.display >= 200)
     return {
       icon: <SignalGood />,
       text: translate('home.components.currentProxy.status.latencyGood'),
@@ -198,7 +207,7 @@ const optionValue = (memberIndex: number, member: ResolvedProxyMember) =>
 const sortProxyOptions = (
   options: ProxyOption[],
   sortType: ProxySortType,
-  delayOf: (member: ResolvedProxyMember) => number,
+  delayOf: (member: ResolvedProxyMember) => DelayPresentation,
   latencyTimeout?: number,
 ) => {
   if (sortType === 0) return options
@@ -214,7 +223,11 @@ const sortProxyOptions = (
   return options
     .map((option) => ({ option, delay: delayOf(option.member) }))
     .sort((a, b) => {
-      const byDelay = compareByDelay(a.delay, b.delay, effectiveTimeout)
+      const byDelay = compareDelayPresentation(
+        a.delay,
+        b.delay,
+        effectiveTimeout,
+      )
       return byDelay || a.option.name.localeCompare(b.option.name)
     })
     .map(({ option }) => option)
@@ -421,7 +434,8 @@ interface PersistentProxySelectProps
   selectedName: string
   groupName: string
   fixed?: string
-  selectedDelay: number
+  selectedDelay: DelayPresentation
+  latencyTimeout?: number
   options: ProxyOption[]
   onChange: (value: string) => void
 }
@@ -431,6 +445,7 @@ const PersistentProxySelect = ({
   fixed,
   selectedName,
   selectedDelay,
+  latencyTimeout,
   options,
   value,
   onChange,
@@ -452,8 +467,12 @@ const PersistentProxySelect = ({
           <Typography noWrap>{selectedName}</Typography>
           <Chip
             size="small"
-            label={delayManager.formatDelay(selectedDelay)}
-            color={convertDelayColor(selectedDelay)}
+            label={delayManager.formatDelay(
+              selectedDelay.raw,
+              latencyTimeout,
+              selectedDelay.percent,
+            )}
+            color={convertDelayColor(selectedDelay, latencyTimeout)}
           />
           {fixedProxyInUsed && (
             <span
@@ -474,8 +493,12 @@ const PersistentProxySelect = ({
           const selected = option.value === value
           const isFixed = option.name === fixed
           const delay = option.disabled
-            ? -1
-            : delayManager.getDelayFix(option.member, groupName)
+            ? { raw: -1, display: -1, percent: 100 }
+            : delayManager.getDelayPresentation(
+                option.member,
+                groupName,
+                latencyTimeout,
+              )
 
           return (
             <MenuItem
@@ -516,8 +539,12 @@ const PersistentProxySelect = ({
               {!option.disabled && (
                 <Chip
                   size="small"
-                  label={delayManager.formatDelay(delay)}
-                  color={convertDelayColor(delay)}
+                  label={delayManager.formatDelay(
+                    delay.raw,
+                    latencyTimeout,
+                    delay.percent,
+                  )}
+                  color={convertDelayColor(delay, latencyTimeout)}
                   sx={{
                     minWidth: '60px',
                     height: '22px',
@@ -787,8 +814,12 @@ export const CurrentProxyCard = () => {
 
   const currentDelay =
     currentMember && selectedGroupName
-      ? delayManager.getDelayFix(currentMember, selectedGroupName)
-      : -1
+      ? delayManager.getDelayPresentation(
+          currentMember,
+          selectedGroupName,
+          defaultLatencyTimeout,
+        )
+      : { raw: -1, display: -1, percent: 100 }
 
   const signalInfo =
     currentProxy && selectedGroupName
@@ -960,7 +991,11 @@ export const CurrentProxyCard = () => {
         <Tooltip
           title={
             currentProxy
-              ? `${signalInfo.text}: ${delayManager.formatDelay(currentDelay)}`
+              ? `${signalInfo.text}: ${delayManager.formatDelay(
+                  currentDelay.raw,
+                  defaultLatencyTimeout,
+                  currentDelay.percent,
+                )}`
               : t('home.components.currentProxy.status.noProxyNode')
           }
         >
@@ -1080,8 +1115,12 @@ export const CurrentProxyCard = () => {
             {currentProxy && !isDirectMode && (
               <Chip
                 size="small"
-                label={delayManager.formatDelay(currentDelay)}
-                color={convertDelayColor(currentDelay)}
+                label={delayManager.formatDelay(
+                  currentDelay.raw,
+                  defaultLatencyTimeout,
+                  currentDelay.percent,
+                )}
+                color={convertDelayColor(currentDelay, defaultLatencyTimeout)}
               />
             )}
           </Box>
@@ -1120,6 +1159,7 @@ export const CurrentProxyCard = () => {
             }
             selectedName={selectedProxyName}
             selectedDelay={currentDelay}
+            latencyTimeout={defaultLatencyTimeout}
             options={proxyOptions}
             open={openSelect === 'proxy'}
             disabled={isDirectMode}

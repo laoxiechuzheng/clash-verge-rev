@@ -1,7 +1,7 @@
 import { afterEach, expect, test, vi } from 'vitest'
 
 import delayManager from '@/services/delay'
-import { compareByDelay } from '@/utils/delay'
+import { compareDelayPresentation } from '@/utils/delay'
 
 import { filterSort } from './use-filter-sort'
 import type { ResolvedMemberOccurrence } from './use-render-list'
@@ -39,13 +39,22 @@ test('matches the previous comparator for cached, fallback and sentinel delays',
       values.forEach((delay, i) => delayManager.setDelay(`${i}`, group, delay))
     }
     for (const timeout of [10000, 20, 0, NaN]) {
+      const effectiveTimeout = timeout > 0 ? timeout : 10000
       const expected = list
         .slice()
         .sort((a, b) =>
-          compareByDelay(
-            delayManager.getDelayFix(a.member, group),
-            delayManager.getDelayFix(b.member, group),
-            timeout > 0 ? timeout : 10000,
+          compareDelayPresentation(
+            delayManager.getDelayPresentation(
+              a.member,
+              group,
+              effectiveTimeout,
+            ),
+            delayManager.getDelayPresentation(
+              b.member,
+              group,
+              effectiveTimeout,
+            ),
+            effectiveTimeout,
           ),
         )
       const before = list.slice()
@@ -67,7 +76,7 @@ test('reads each occurrence once and observes cache updates and expiry on the ne
   ]
   const cachedOrder = [list[0], list[2], list[1], list[3]]
   delayManager.setDelay('0', 'expiry', 1)
-  const get = vi.spyOn(delayManager, 'getDelayFix')
+  const get = vi.spyOn(delayManager, 'getDelayPresentation')
   expect(filterSort(list, 'expiry', '', 1)).toEqual(cachedOrder)
   expect(get).toHaveBeenCalledTimes(list.length)
   list.forEach((item, i) => expect(get.mock.calls[i][0]).toBe(item.member))

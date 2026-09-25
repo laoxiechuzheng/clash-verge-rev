@@ -1,5 +1,6 @@
 pub mod autostart;
 pub mod backup;
+pub(crate) mod delay_display;
 pub mod handle;
 pub mod hotkey;
 pub mod listener;

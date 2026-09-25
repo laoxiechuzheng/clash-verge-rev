@@ -13,6 +13,26 @@ export type DelayState =
   | 'timeout'
   | 'measured'
 
+export interface DelayPresentation {
+  raw: number
+  display: number
+  percent: number
+}
+
+/** Applies a display-only multiplier while preserving the raw state used for classification. */
+export const presentDelay = (
+  delay: number,
+  percent = 100,
+  timeout: number = DEFAULT_DELAY_TIMEOUT,
+): DelayPresentation => {
+  const displayPercent = Number.isFinite(percent) && percent > 0 ? percent : 100
+  const display =
+    classifyDelay(delay, timeout) === 'measured'
+      ? Math.max(1, Math.round((delay * displayPercent) / 100))
+      : delay
+  return { raw: delay, display, percent: displayPercent }
+}
+
 export const classifyDelay = (
   delay: number,
   timeout: number = DEFAULT_DELAY_TIMEOUT,
@@ -55,4 +75,20 @@ export const compareByDelay = (
 
   if (aState !== 'measured') return 0
   return a - b
+}
+
+/** Sorts by the raw state, then by the value users actually see. */
+export const compareDelayPresentation = (
+  a: DelayPresentation,
+  b: DelayPresentation,
+  timeout: number = DEFAULT_DELAY_TIMEOUT,
+): number => {
+  const [aState, bState] = [
+    classifyDelay(a.raw, timeout),
+    classifyDelay(b.raw, timeout),
+  ]
+  const rankDifference = rankOf(aState) - rankOf(bState)
+  if (rankDifference !== 0) return rankDifference
+  if (aState !== 'measured') return 0
+  return a.display - b.display
 }

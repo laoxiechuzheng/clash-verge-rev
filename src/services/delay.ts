@@ -5,17 +5,23 @@ import {
 } from 'tauri-plugin-mihomo-api'
 
 import {
+  delayDisplayPercentOf,
   memberDetails,
   providerNameOf,
   type InteractableProxyMember,
   type ResolvedProxyMember,
 } from '@/types/proxy-view'
 import { debugLog } from '@/utils/debug'
-import { classifyDelay, DEFAULT_DELAY_TIMEOUT } from '@/utils/delay'
+import {
+  classifyDelay,
+  DEFAULT_DELAY_TIMEOUT,
+  presentDelay,
+  type DelayPresentation,
+} from '@/utils/delay'
 import { isValidUrl } from '@/utils/network'
 
 export type DelaySnapshot = {
-  of: (member: ResolvedProxyMember) => number
+  of: (member: ResolvedProxyMember) => DelayPresentation
 }
 
 const hashKey = (name: string, group: string) => `${group ?? ''}::${name}`
@@ -146,7 +152,7 @@ class DelayManager {
     if (existing) return existing
 
     const snapshot: DelaySnapshot = {
-      of: (member) => this.getDelayFix(member, group),
+      of: (member) => this.getDelayPresentation(member, group),
     }
     this.groupSnapshots.set(group, snapshot)
     return snapshot
@@ -245,7 +251,7 @@ class DelayManager {
     return update ? update.delay : -1
   }
 
-  getDelayFix(member: ResolvedProxyMember, group: string) {
+  getRawDelayFix(member: ResolvedProxyMember, group: string) {
     if (member.kind === 'unresolved') return -1
     const details = memberDetails(member)
     const name = member.ref.name
@@ -258,6 +264,26 @@ class DelayManager {
       return details.history[details.history.length - 1].delay || 1e6
     }
     return -1
+  }
+
+  getDelayPresentation(
+    member: ResolvedProxyMember,
+    group: string,
+    timeout = DEFAULT_DELAY_TIMEOUT,
+  ): DelayPresentation {
+    return presentDelay(
+      this.getRawDelayFix(member, group),
+      delayDisplayPercentOf(member),
+      timeout,
+    )
+  }
+
+  getDelayFix(
+    member: ResolvedProxyMember,
+    group: string,
+    timeout = DEFAULT_DELAY_TIMEOUT,
+  ) {
+    return this.getDelayPresentation(member, group, timeout).display
   }
 
   async unifiedDelayCheck(
@@ -407,7 +433,11 @@ class DelayManager {
     )
   }
 
-  formatDelay(delay: number, timeout = DEFAULT_DELAY_TIMEOUT) {
+  formatDelay(
+    delay: number,
+    timeout = DEFAULT_DELAY_TIMEOUT,
+    displayPercent = 100,
+  ) {
     switch (classifyDelay(delay, timeout)) {
       case 'untested':
         return '-'
@@ -418,11 +448,15 @@ class DelayManager {
       case 'error':
         return 'Error'
       case 'measured':
-        return `${delay}`
+        return `${presentDelay(delay, displayPercent, timeout).display}`
     }
   }
 
-  formatDelayColor(delay: number, timeout = DEFAULT_DELAY_TIMEOUT) {
+  formatDelayColor(
+    delay: number,
+    timeout = DEFAULT_DELAY_TIMEOUT,
+    displayPercent = 100,
+  ) {
     switch (classifyDelay(delay, timeout)) {
       case 'untested':
       case 'testing':
@@ -430,11 +464,17 @@ class DelayManager {
       case 'timeout':
       case 'error':
         return 'error.main'
-      case 'measured':
+      case 'measured': {
         // Colour and signal bars intentionally use different grading thresholds.
-        if (delay >= 400) return 'warning.main'
-        if (delay >= 250) return 'primary.main'
+        const displayDelay = presentDelay(
+          delay,
+          displayPercent,
+          timeout,
+        ).display
+        if (displayDelay >= 400) return 'warning.main'
+        if (displayDelay >= 250) return 'primary.main'
         return 'success.main'
+      }
     }
   }
 }

@@ -50,6 +50,7 @@ import {
   selectRuleChainMembers,
 } from '@/types/proxy-view'
 import { debugLog } from '@/utils/debug'
+import { presentDelay } from '@/utils/delay'
 
 import { rebindProxyChainItems, type ProxyChainItem } from './proxy-chain-model'
 
@@ -147,6 +148,11 @@ const ChainCard = ({
       ? theme.palette.warning.main
       : undefined
 
+  const delay =
+    proxy.delay === undefined
+      ? undefined
+      : presentDelay(proxy.delay, proxy.delayPercent)
+
   return (
     <Box
       sx={{
@@ -221,16 +227,18 @@ const ChainCard = ({
         />
       )}
 
-      {proxy.delay !== undefined && (
+      {delay !== undefined && (
         <Chip
           label={
-            proxy.delay > 0 ? `${proxy.delay}ms` : t('shared.labels.timeout')
+            delay.raw > 0 && delay.raw < 10000
+              ? `${delay.display}ms`
+              : t('shared.labels.timeout')
           }
           size="small"
           color={
-            proxy.delay > 0 && proxy.delay < 200
+            delay.raw > 0 && delay.raw < 10000 && delay.display < 200
               ? 'success'
-              : proxy.delay > 0 && proxy.delay < 800
+              : delay.raw > 0 && delay.raw < 10000 && delay.display < 800
                 ? 'warning'
                 : 'error'
           }

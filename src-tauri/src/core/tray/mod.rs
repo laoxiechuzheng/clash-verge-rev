@@ -7,6 +7,10 @@ use crate::utils::window_manager::WindowManager;
 use crate::{
     Type, cmd,
     config::Config,
+    core::{
+        delay_display::{DEFAULT_DELAY_DISPLAY_PERCENT, DelayDisplayContext, display_delay},
+        proxy_view::{ProxyMemberRef, ProxyViewBuilder, ProxyViewInput, ProxyViewV1},
+    },
     feat, logging,
     module::lightweight::is_in_lightweight_mode,
     utils::{dirs::find_target_icons, help},
@@ -14,7 +18,6 @@ use crate::{
 use clash_verge_limiter::{Limiter, SystemClock, SystemLimiter};
 use clash_verge_logging::logging_error;
 use tauri::tray::{MouseButton, MouseButtonState, TrayIcon, TrayIconBuilder, TrayIconEvent};
-use tauri_plugin_mihomo::models::Proxies;
 use tokio::fs;
 
 use super::handle;
@@ -217,6 +220,12 @@ impl Tray {
         let profiles_config = Config::profiles().await;
         let profiles_arc = profiles_config.latest_arc();
         let profiles_preview = profiles_arc.profiles_preview().unwrap_or_default();
+        let current_profile_url = profiles_arc
+            .current
+            .as_ref()
+            .and_then(|uid| profiles_arc.get_item(uid).ok())
+            .and_then(|profile| profile.url.as_deref())
+            .map(str::to_owned);
         let is_lightweight_mode = is_in_lightweight_mode();
 
         logging_error!(
@@ -229,6 +238,7 @@ impl Tray {
                     *tun_mode,
                     tun_mode_available,
                     profiles_preview,
+                    current_profile_url,
                     TrayMenuOptions {
                         is_lightweight_mode,
                         include_proxy_groups,
@@ -461,14 +471,15 @@ fn create_subcreate_proxy_menu_item(
     app_handle: &AppHandle,
     proxy_mode: &str,
     proxy_group_order_map: Option<HashMap<String, usize>>,
-    proxy_nodes_data: Option<Proxies>,
+    proxy_view: Option<ProxyViewV1>,
 ) -> Vec<Submenu<Wry>> {
     let proxy_submenus: Vec<Submenu<Wry>> = {
         let mut submenus: Vec<(String, usize, Submenu<Wry>)> = Vec::new();
 
         // TODO: 应用启动时，内核还未启动完全，无法获取代理节点信息
-        if let Some(proxy_nodes_data) = proxy_nodes_data {
-            for (group_name, group_data) in proxy_nodes_data.proxies.iter() {
+        if let Some(proxy_view) = proxy_view {
+            for group_data in proxy_view.global.iter().chain(proxy_view.groups.iter()) {
+                let group_name = group_data.name.as_str();
                 let should_show = match proxy_mode {
                     "global" => group_name == "GLOBAL",
                     _ => group_name != "GLOBAL",
@@ -478,26 +489,44 @@ fn create_subcreate_proxy_menu_item(
                     continue;
                 }
 
-                let Some(all_proxies) = group_data.all.as_ref() else {
-                    continue;
-                };
-
                 let now_proxy = group_data.now.as_deref().unwrap_or_default();
 
-                let group_items: Vec<CheckMenuItem<Wry>> = all_proxies
+                let group_items: Vec<CheckMenuItem<Wry>> = group_data
+                    .members
                     .iter()
-                    .filter_map(|proxy_str| {
-                        let is_selected = *proxy_str == now_proxy;
+                    .filter_map(|member| {
+                        let (proxy_str, delay_display_percent, raw_delay) = match member {
+                            ProxyMemberRef::Node { record_id, .. } => {
+                                let record = proxy_view.records.get(record_id)?;
+                                (
+                                    record.name.as_str(),
+                                    record.delay_display_percent,
+                                    record.history.last().map(|history| history.delay),
+                                )
+                            }
+                            ProxyMemberRef::Group { name } => {
+                                let group = proxy_view
+                                    .global
+                                    .as_ref()
+                                    .filter(|group| group.name == name.as_str())
+                                    .or_else(|| proxy_view.groups.iter().find(|group| group.name == name.as_str()))?;
+                                (
+                                    group.name.as_str(),
+                                    group.delay_display_percent,
+                                    group.history.last().map(|history| history.delay),
+                                )
+                            }
+                            ProxyMemberRef::Unresolved { name, .. } => {
+                                (name.as_str(), DEFAULT_DELAY_DISPLAY_PERCENT, None)
+                            }
+                        };
+                        let is_selected = proxy_str == now_proxy;
                         let item_id = format!("proxy_{}_{}", group_name, proxy_str);
-
-                        let delay_text = proxy_nodes_data
-                            .proxies
-                            .get(proxy_str)
-                            .and_then(|h| h.history.last())
-                            .map(|h| match h.delay {
+                        let delay_text = raw_delay
+                            .map(|delay| match display_delay(delay, delay_display_percent) {
                                 0 => "-ms".into(),
                                 delay if delay >= 10000 => "-ms".into(),
-                                _ => format!("{}ms", h.delay),
+                                delay => format!("{delay}ms"),
                             })
                             .unwrap_or_else(|| "-ms".into());
 
@@ -513,7 +542,7 @@ fn create_subcreate_proxy_menu_item(
                     continue;
                 }
 
-                let group_display_name = group_name.to_string();
+                let group_display_name = group_name.to_owned();
 
                 let group_items_refs: Vec<&dyn IsMenuItem<Wry>> =
                     group_items.iter().map(|item| item as &dyn IsMenuItem<Wry>).collect();
@@ -526,7 +555,7 @@ fn create_subcreate_proxy_menu_item(
                     &group_items_refs,
                 ) {
                     let insertion_index = submenus.len();
-                    submenus.push((group_name.into(), insertion_index, submenu));
+                    submenus.push((group_name.to_owned(), insertion_index, submenu));
                 } else {
                     logging!(warn, Type::Tray, "Failed to create proxy group submenu: {}", group_name);
                 }
@@ -592,6 +621,7 @@ async fn create_tray_menu(
     tun_mode_enabled: bool,
     tun_mode_available: bool,
     profiles_preview: Vec<IProfilePreview<'_>>,
+    current_profile_url: Option<String>,
     options: TrayMenuOptions,
 ) -> Result<tauri::menu::Menu<Wry>> {
     let current_proxy_mode = mode.unwrap_or("");
@@ -601,30 +631,47 @@ async fn create_tray_menu(
         options.include_proxy_groups && verge_settings.tray_proxy_groups_display_mode.as_deref() != Some("disable");
 
     // TODO: should update tray menu again when it was timeout error
-    let (proxy_nodes_data, runtime_proxy_groups_order) = if fetch_proxy_groups {
-        let proxy_nodes_data =
-            tokio::time::timeout(Duration::from_millis(1000), handle::Handle::mihomo().get_proxies())
-                .await
-                .map_or(None, |res| res.ok());
-
+    let (proxy_view, runtime_proxy_groups_order) = if fetch_proxy_groups {
         let runtime = Config::runtime().await.latest_arc();
-        let runtime_proxy_groups_order = runtime.config.as_ref().map(|config| {
-            config
-                .get("proxy-groups")
-                .and_then(|groups| groups.as_sequence())
-                .map(|groups| {
-                    groups
-                        .iter()
-                        .filter_map(|group| group.get("name"))
-                        .filter_map(|name| name.as_str())
-                        .enumerate()
-                        .map(|(index, name)| (name.into(), index))
-                        .collect::<HashMap<String, usize>>()
-                })
-                .unwrap_or_default()
+        let runtime_group_order = runtime
+            .config
+            .as_ref()
+            .and_then(|config| config.get("proxy-groups"))
+            .and_then(|groups| groups.as_sequence())
+            .map(|groups| {
+                groups
+                    .iter()
+                    .filter_map(|group| group.get("name"))
+                    .filter_map(|name| name.as_str())
+                    .map(str::to_owned)
+                    .collect::<Vec<_>>()
+            })
+            .unwrap_or_default();
+        let runtime_proxy_groups_order = Some(
+            runtime_group_order
+                .iter()
+                .enumerate()
+                .map(|(index, name)| (name.as_str().into(), index))
+                .collect::<HashMap<String, usize>>(),
+        );
+        let delay_display = DelayDisplayContext::from_runtime(current_profile_url.as_deref(), runtime.config.as_ref());
+        let (proxies, providers) = tokio::join!(
+            tokio::time::timeout(Duration::from_millis(1000), handle::Handle::mihomo().get_proxies()),
+            tokio::time::timeout(
+                Duration::from_millis(1000),
+                handle::Handle::mihomo().get_proxy_providers(),
+            ),
+        );
+        let proxy_view = proxies.map_or(None, |result| result.ok()).map(|proxies| {
+            ProxyViewBuilder::build(ProxyViewInput {
+                runtime_group_order,
+                proxies,
+                providers: providers.ok().and_then(Result::ok),
+                delay_display,
+            })
         });
 
-        (proxy_nodes_data, runtime_proxy_groups_order)
+        (proxy_view, runtime_proxy_groups_order)
     } else {
         (None, None)
     };
@@ -722,7 +769,7 @@ async fn create_tray_menu(
 
     let (proxies_menu, inline_proxy_items) = if include_proxy_groups {
         let proxy_sub_menus =
-            create_subcreate_proxy_menu_item(app_handle, current_proxy_mode, proxy_group_order_map, proxy_nodes_data);
+            create_subcreate_proxy_menu_item(app_handle, current_proxy_mode, proxy_group_order_map, proxy_view);
 
         match tray_proxy_groups_display_mode {
             "default" => create_proxy_menu_item(app_handle, false, proxy_sub_menus, &texts.proxies)?,

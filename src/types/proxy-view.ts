@@ -33,6 +33,7 @@ export interface ProxyGroupView extends ProxyCapabilities {
   icon?: string
   testUrl?: string
   history: DelayHistory[]
+  delayDisplayPercent: number
   members: ProxyMemberRef[]
 }
 
@@ -42,6 +43,7 @@ export interface ProxyNodeView extends ProxyCapabilities {
   type: string
   alive: boolean
   history: DelayHistory[]
+  delayDisplayPercent: number
   id?: string
   hidden?: boolean
   icon?: string
@@ -158,6 +160,15 @@ export const memberDetails = (member: ResolvedProxyMember) =>
     : member.kind === 'group'
       ? member.group
       : undefined
+
+export const delayDisplayPercentOf = (member: ResolvedProxyMember) => {
+  if (member.kind === 'unresolved') return 100
+  const percent =
+    member.kind === 'node'
+      ? member.node.delayDisplayPercent
+      : member.group.delayDisplayPercent
+  return Number.isFinite(percent) && percent > 0 ? percent : 200
+}
 
 export function findCurrentGroupMember(
   view: ProxyViewV1,
